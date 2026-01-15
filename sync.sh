@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+VERSION="1.0.0"
+
 # Load config
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/amplifier-sync/config"
 if [ -f "$CONFIG_FILE" ]; then
@@ -22,11 +24,22 @@ DIRTY_POLICY=""
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 DIM='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Check dependencies
+check_deps() {
+  if ! command -v git &>/dev/null; then
+    echo -e "${RED}Error: git is required but not found${NC}"
+    exit 1
+  fi
+}
+
 sync_repos() {
+  check_deps
+
   echo -e "${BLUE}🔄 Syncing amplifier repos...${NC}"
   echo ""
 
@@ -38,8 +51,12 @@ sync_repos() {
   done
 
   echo ""
-  echo -e "${BLUE}📦 Running amplifier update...${NC}"
-  echo "Y" | amplifier update || amplifier update --yes 2>/dev/null || amplifier update
+  if command -v amplifier &>/dev/null; then
+    echo -e "${BLUE}📦 Running amplifier update...${NC}"
+    echo "Y" | amplifier update || amplifier update --yes 2>/dev/null || amplifier update
+  else
+    echo -e "${DIM}Skipping amplifier update (amplifier CLI not found)${NC}"
+  fi
   echo -e "${GREEN}✅ Done!${NC}"
 }
 
@@ -161,10 +178,19 @@ EOF
 case "${1:-sync}" in
   sync) sync_repos ;;
   configure|config) configure ;;
+  version|--version|-v)
+    echo "amp-sync $VERSION"
+    ;;
   help|--help|-h)
-    echo "amp-sync [sync|configure|help]"
-    echo "  sync      - Pull all repos, run amplifier update"
-    echo "  configure - Set dev directory and pattern"
+    echo "amp-sync $VERSION"
+    echo ""
+    echo "Usage: amp-sync [command]"
+    echo ""
+    echo "Commands:"
+    echo "  sync       Pull all repos and run amplifier update (default)"
+    echo "  configure  Set dev directory and pattern"
+    echo "  version    Show version"
+    echo "  help       Show this help"
     ;;
   *) echo "Unknown: $1"; exit 1 ;;
 esac

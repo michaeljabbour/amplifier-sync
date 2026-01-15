@@ -1,0 +1,28 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install shellcheck
+
+      - name: Run ShellCheck
+        run: shellcheck sync.sh
+
+      - name: Verify script syntax
+        run: bash -n sync.sh

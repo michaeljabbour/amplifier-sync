@@ -1,0 +1,8 @@
+# ShellCheck configuration
+# https://www.shellcheck.net/wiki/
+
+# Disable specific warnings if needed
+# disable=SC2034  # Unused variables
+
+# Set shell dialect
+shell=bash
