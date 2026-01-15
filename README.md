@@ -13,7 +13,7 @@ Keep all your amplifier repos up to date with a single command.
 ## Install
 
 ```bash
-git clone https://github.com/microsoft/amplifier-sync.git ~/dev/amplifier-sync
+git clone https://github.com/michaeljabbour/amplifier-sync.git ~/dev/amplifier-sync
 cd ~/dev/amplifier-sync
 make install
 ```
