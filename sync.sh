@@ -14,73 +14,152 @@ fi
 AMPLIFIER_DEV_DIR="${AMPLIFIER_DEV_DIR:-$HOME/dev}"
 AMPLIFIER_PATTERN="${AMPLIFIER_PATTERN:-amplifier*}"
 
+# Global state for "apply to all" choices
+STASH_ALL=""
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 DIM='\033[0;90m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
+
+# Ask user what to do with local changes
+# Returns: "stash", "skip", or sets STASH_ALL
+ask_local_changes() {
+  local name="$1"
+
+  # If user already chose "all", use that
+  if [ "$STASH_ALL" = "stash" ]; then
+    echo "stash"
+    return
+  elif [ "$STASH_ALL" = "skip" ]; then
+    echo "skip"
+    return
+  fi
+
+  echo ""
+  echo -e "${YELLOW}${BOLD}$name${NC} has local changes."
+  echo -e "  [${BOLD}s${NC}] Stash, sync, unstash    [${BOLD}a${NC}] Stash all remaining"
+  echo -e "  [${BOLD}k${NC}] Skip this repo          [${BOLD}n${NC}] Skip all remaining"
+  echo ""
+  read -p "Choice [s/k/a/n]: " -n 1 choice
+  echo ""
+
+  case "$choice" in
+    s|S|"")
+      echo "stash"
+      ;;
+    k|K)
+      echo "skip"
+      ;;
+    a|A)
+      STASH_ALL="stash"
+      echo "stash"
+      ;;
+    n|N)
+      STASH_ALL="skip"
+      echo "skip"
+      ;;
+    *)
+      echo "skip"
+      ;;
+  esac
+}
+
+sync_repo() {
+  local d="$1"
+  local name="$(basename "$d")"
+
+  cd "$d"
+
+  # Check if remote exists and is reachable (quick check)
+  if ! git ls-remote --exit-code origin &>/dev/null; then
+    echo -e "${DIM}=== $name === (no remote access, skipping)${NC}"
+    return 0
+  fi
+
+  # Fetch first (always safe)
+  git fetch --quiet origin 2>/dev/null || true
+
+  # Get current branch
+  local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+  # Check for local changes (uncommitted or staged)
+  local has_changes=0
+  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    has_changes=1
+  fi
+
+  # Check for unpushed commits
+  local has_unpushed=0
+  if git rev-parse --abbrev-ref --symbolic-full-name @{u} &>/dev/null; then
+    local unpushed=$(git rev-list @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$unpushed" -gt 0 ]; then
+      has_unpushed=1
+    fi
+  fi
+
+  # Handle repos with local changes
+  if [ "$has_changes" -eq 1 ]; then
+    local action=$(ask_local_changes "$name")
+
+    if [ "$action" = "skip" ]; then
+      echo -e "${DIM}=== $name === (skipped - has local changes)${NC}"
+      return 0
+    fi
+
+    # Stash, sync, unstash
+    echo -e "${YELLOW}=== $name ===${NC} (stashing local changes)"
+    git stash --quiet
+
+    if sync_pull "$name" "$current_branch"; then
+      git stash pop --quiet 2>/dev/null || echo -e "  ${YELLOW}Note: stash pop had conflicts, changes in stash${NC}"
+    else
+      git stash pop --quiet 2>/dev/null || true
+    fi
+  else
+    if [ "$has_unpushed" -eq 1 ]; then
+      echo -e "${GREEN}=== $name ===${NC} (has unpushed commits)"
+    else
+      echo -e "${GREEN}=== $name ===${NC}"
+    fi
+    sync_pull "$name" "$current_branch"
+  fi
+}
+
+sync_pull() {
+  local name="$1"
+  local current_branch="$2"
+
+  # Try to pull with rebase
+  if git pull --rebase 2>&1 | sed 's/^/  /'; then
+    return 0
+  else
+    # Check if we're on a branch without upstream
+    if ! git rev-parse --abbrev-ref --symbolic-full-name @{u} &>/dev/null; then
+      echo -e "  ${DIM}(branch '$current_branch' has no upstream, fetched only)${NC}"
+    fi
+    return 1
+  fi
+}
 
 sync_repos() {
   echo -e "${BLUE}🔄 Syncing all amplifier repos in ${AMPLIFIER_DEV_DIR}/${AMPLIFIER_PATTERN}${NC}"
   echo ""
 
-  local synced=0
-  local skipped=0
-  local failed=0
+  # Reset global state
+  STASH_ALL=""
 
   for d in "$AMPLIFIER_DEV_DIR"/$AMPLIFIER_PATTERN/; do
     [ -d "$d/.git" ] || continue
-
-    (
-      cd "$d"
-      name="$(basename "$d")"
-
-      # Check if remote exists and is reachable (quick check)
-      if ! git ls-remote --exit-code origin &>/dev/null; then
-        echo -e "${DIM}=== $name === (no remote access, skipping)${NC}"
-        exit 0
-      fi
-
-      # Fetch first (always safe)
-      git fetch --quiet origin 2>/dev/null || true
-
-      # Get current branch
-      current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-
-      # Check for local changes
-      local has_changes=0
-      if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-        has_changes=1
-      fi
-
-      if [ "$has_changes" -eq 1 ]; then
-        echo -e "${YELLOW}=== $name === ${NC}(local changes, using autostash)"
-      else
-        echo -e "${GREEN}=== $name ===${NC}"
-      fi
-
-      # Try to pull with rebase and autostash (safest option)
-      # --autostash: automatically stash/unstash local changes
-      # --rebase: rebase local commits on top of upstream (no merge commits)
-      if git pull --rebase --autostash 2>&1 | sed 's/^/  /'; then
-        : # success
-      else
-        # If pull failed, try fetching the default branch
-        default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
-
-        # Check if we're on a branch without upstream
-        if ! git rev-parse --abbrev-ref --symbolic-full-name @{u} &>/dev/null; then
-          echo -e "  ${DIM}(branch '$current_branch' has no upstream, fetched only)${NC}"
-        fi
-      fi
-    ) || true
+    sync_repo "$d"
   done
 
   echo ""
   echo -e "${BLUE}📦 Running amplifier update...${NC}"
-  # Use echo Y (single Y) instead of yes Y (infinite Y's) to avoid loops
   echo "Y" | amplifier update || amplifier update --yes 2>/dev/null || amplifier update
   echo -e "${GREEN}✅ Done!${NC}"
 }
@@ -136,7 +215,7 @@ show_help() {
   echo "  help       Show this help message"
   echo ""
   echo "Safety: This tool is 100% non-destructive:"
-  echo "  - Uses git pull --rebase --autostash (auto-saves local changes)"
+  echo "  - Asks before stashing local changes"
   echo "  - Never uses git reset, force push, or anything that loses work"
   echo "  - Skips repos with no remote access"
   echo "  - Skips branches without upstream tracking"
