@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Amplifier Sync - Pull all amplifier repos and update modules
-# https://github.com/michaeljabbour/amplifier-sync
 
 set -euo pipefail
 
