@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Amplifier Sync - Pull all amplifier repos and update modules
+# 100% non-destructive: uses --autostash, never force pushes or resets
 
 set -euo pipefail
 
@@ -18,15 +19,16 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+DIM='\033[0;90m'
 NC='\033[0m' # No Color
 
 sync_repos() {
   echo -e "${BLUE}🔄 Syncing all amplifier repos in ${AMPLIFIER_DEV_DIR}/${AMPLIFIER_PATTERN}${NC}"
   echo ""
 
-  local success=0
-  local failed=0
+  local synced=0
   local skipped=0
+  local failed=0
 
   for d in "$AMPLIFIER_DEV_DIR"/$AMPLIFIER_PATTERN/; do
     [ -d "$d/.git" ] || continue
@@ -35,6 +37,18 @@ sync_repos() {
       cd "$d"
       name="$(basename "$d")"
 
+      # Check if remote exists and is reachable (quick check)
+      if ! git ls-remote --exit-code origin &>/dev/null; then
+        echo -e "${DIM}=== $name === (no remote access, skipping)${NC}"
+        exit 0
+      fi
+
+      # Fetch first (always safe)
+      git fetch --quiet origin 2>/dev/null || true
+
+      # Get current branch
+      current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
       # Check for local changes
       local has_changes=0
       if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
@@ -42,29 +56,32 @@ sync_repos() {
       fi
 
       if [ "$has_changes" -eq 1 ]; then
-        echo -e "${YELLOW}=== $name ===${NC} (stashing changes)"
-        git stash -q 2>/dev/null || true
+        echo -e "${YELLOW}=== $name === ${NC}(local changes, using autostash)"
       else
         echo -e "${GREEN}=== $name ===${NC}"
       fi
 
-      # Pull with rebase
-      if git pull --rebase 2>&1 | sed 's/^/  /'; then
+      # Try to pull with rebase and autostash (safest option)
+      # --autostash: automatically stash/unstash local changes
+      # --rebase: rebase local commits on top of upstream (no merge commits)
+      if git pull --rebase --autostash 2>&1 | sed 's/^/  /'; then
         : # success
       else
-        echo -e "  ${RED}Failed to pull${NC}"
-      fi
+        # If pull failed, try fetching the default branch
+        default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
-      # Restore stashed changes
-      if [ "$has_changes" -eq 1 ]; then
-        git stash pop -q 2>/dev/null || echo -e "  ${YELLOW}Note: stash pop had conflicts${NC}"
+        # Check if we're on a branch without upstream
+        if ! git rev-parse --abbrev-ref --symbolic-full-name @{u} &>/dev/null; then
+          echo -e "  ${DIM}(branch '$current_branch' has no upstream, fetched only)${NC}"
+        fi
       fi
     ) || true
   done
 
   echo ""
   echo -e "${BLUE}📦 Running amplifier update...${NC}"
-  yes Y | amplifier update 2>/dev/null || amplifier update
+  # Use echo Y (single Y) instead of yes Y (infinite Y's) to avoid loops
+  echo "Y" | amplifier update || amplifier update --yes 2>/dev/null || amplifier update
   echo -e "${GREEN}✅ Done!${NC}"
 }
 
@@ -117,6 +134,12 @@ show_help() {
   echo "  sync       Pull all repos and run amplifier update (default)"
   echo "  configure  Set up your dev directory and repo pattern"
   echo "  help       Show this help message"
+  echo ""
+  echo "Safety: This tool is 100% non-destructive:"
+  echo "  - Uses git pull --rebase --autostash (auto-saves local changes)"
+  echo "  - Never uses git reset, force push, or anything that loses work"
+  echo "  - Skips repos with no remote access"
+  echo "  - Skips branches without upstream tracking"
   echo ""
   echo "Config: $CONFIG_FILE"
   echo "Current settings:"
